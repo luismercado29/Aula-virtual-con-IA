@@ -6,6 +6,9 @@ dist/
 dist-ssr/
 *.local
 
+# Cache incremental de TypeScript, generada por `tsc -b`
+*.tsbuildinfo
+
 # Logs
 logs/
 *.log
