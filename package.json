@@ -5,12 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --noEmit",
     "lint": "eslint .",
     "preview": "vite preview"
   },
+  "comment_tfjs": "Se quito @tensorflow/tfjs: no se importaba en ningun archivo. El motor de recomendaciones es filtrado colaborativo con similitud de Jaccard escrito a mano, sin dependencias.",
   "dependencies": {
-    "@tensorflow/tfjs": "^4.17.0",
     "lucide-react": "^0.344.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

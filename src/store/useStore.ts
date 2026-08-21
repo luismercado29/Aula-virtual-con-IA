@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import { User, Course, CourseInteraction } from '../types';
 
 interface State {
@@ -9,6 +10,7 @@ interface State {
   setCurrentUser: (user: User | null) => void;
   addCourse: (course: Course) => void;
   addInteraction: (interaction: CourseInteraction) => void;
+  toggleEnrollment: (courseId: string) => void;
   updateRecommendations: () => void;
 }
 
@@ -257,7 +259,9 @@ const initialCourses: Course[] = [
   }
 ];
 
-const useStore = create<State>((set, get) => ({
+const useStore = create<State>()(
+  persist(
+    (set, get) => ({
   currentUser: null,
   users: initialUsers,
   courses: initialCourses,
@@ -265,8 +269,11 @@ const useStore = create<State>((set, get) => ({
 
   setCurrentUser: (user) => {
     set({ currentUser: user });
+    // Al entrar hay que recalcular: si el usuario vuelve con interacciones ya
+    // guardadas, sus recomendaciones deben estar listas de inmediato.
+    get().updateRecommendations();
   },
-  
+
   addCourse: (course) => set((state) => ({
     courses: [...state.courses, course]
   })),
@@ -289,6 +296,37 @@ const useStore = create<State>((set, get) => ({
       currentUser: updatedUser,
       users: updatedUsers
     };
+  }),
+
+  // Inscribirse o darse de baja de un curso.
+  //
+  // enrolledCourses ya se usaba para filtrar recomendaciones, pero no habia
+  // forma de llenarlo: quedaba siempre vacio y ese filtro nunca hacia nada.
+  toggleEnrollment: (courseId) => set((state) => {
+    if (!state.currentUser) return state;
+
+    const inscrito = state.currentUser.enrolledCourses.includes(courseId);
+
+    const updatedUser: User = {
+      ...state.currentUser,
+      enrolledCourses: inscrito
+        ? state.currentUser.enrolledCourses.filter((id) => id !== courseId)
+        : [...state.currentUser.enrolledCourses, courseId],
+      interactions: inscrito
+        ? state.currentUser.interactions
+        : [
+            ...state.currentUser.interactions,
+            { courseId, timestamp: Date.now(), type: 'enroll' as const }
+          ]
+    };
+
+    const updatedUsers = state.users.map((user) =>
+      user.id === updatedUser.id ? updatedUser : user
+    );
+
+    setTimeout(() => get().updateRecommendations(), 0);
+
+    return { currentUser: updatedUser, users: updatedUsers };
   }),
 
   updateRecommendations: () => {
@@ -318,8 +356,13 @@ const useStore = create<State>((set, get) => ({
       const currentUserInteractions = userInteractions.get(state.currentUser.id) || new Set();
       const similarityScores = new Map<string, number>();
 
-      // Get user's recent interactions for category-based recommendations
-      const recentInteractions = state.currentUser.interactions
+      // Interacciones mas recientes, para recomendar por categoria.
+      //
+      // Se copia el array antes de ordenar: .sort() ordena en el sitio, y
+      // aplicado directamente sobre state.currentUser.interactions mutaba el
+      // estado de Zustand fuera de set(), reordenando el historial real del
+      // usuario como efecto colateral de calcular recomendaciones.
+      const recentInteractions = [...state.currentUser.interactions]
         .sort((a, b) => b.timestamp - a.timestamp)
         .slice(0, 5);
       
@@ -331,17 +374,29 @@ const useStore = create<State>((set, get) => ({
           .filter(Boolean)
       );
 
+      // Etiquetas de los cursos con los que el usuario ya interactuo, para
+      // premiar temas afines aunque sean de otra categoria.
+      const tagsDeInteres = new Set<string>();
+      currentUserInteractions.forEach((id) => {
+        courses.find((c) => c.id === id)?.tags.forEach((t) => tagsDeInteres.add(t));
+      });
+
       courses.forEach(course => {
         let score = 0;
-        
-        // Base score from user's direct interactions
-        if (currentUserInteractions.has(course.id)) {
-          score += 0.5;
-        }
+
+        // Antes habia aqui un "+0.5 si el usuario ya interactuo con el curso".
+        // Era codigo muerto: esos mismos cursos se descartan mas abajo, asi que
+        // ese medio punto no llegaba a influir en ninguna recomendacion.
 
         // Category preference boost
         if (recentCategories.has(course.category)) {
           score += 0.3;
+        }
+
+        // Afinidad por etiquetas compartidas.
+        const comunes = course.tags.filter((t) => tagsDeInteres.has(t)).length;
+        if (comunes > 0) {
+          score += Math.min(comunes * 0.15, 0.45);
         }
 
         // Score from similar users
@@ -374,6 +429,24 @@ const useStore = create<State>((set, get) => ({
       set({ recommendations: [] });
     }
   }
-}));
+    }),
+    {
+      name: 'aula-virtual',
+      storage: createJSONStorage(() => localStorage),
+      // Solo se guarda lo que genera el usuario. El catalogo de cursos queda
+      // fuera a proposito: si se persistiera, cualquier curso nuevo que se
+      // agregue al codigo no le llegaria a quien ya tenga datos guardados.
+      partialize: (state) => ({
+        currentUser: state.currentUser,
+        users: state.users
+      }),
+      // Tras rehidratar desde localStorage hay que recalcular: las
+      // recomendaciones no se guardan, se derivan del historial.
+      onRehydrateStorage: () => (state) => {
+        state?.updateRecommendations();
+      }
+    }
+  )
+);
 
 export default useStore;
